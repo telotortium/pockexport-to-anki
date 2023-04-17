@@ -224,6 +224,14 @@ def main():
    response = json.loads(requests.post(anki_url, json=payload).text)
    print(response)
 
+   payload = {
+      "action": "sync",
+      "version": version,
+   }
+   print(payload)
+   response = json.loads(requests.post(anki_url, json=payload).text)
+   print(response)
+
    print("Pocket API (NYI)")
    print(f"favorite_items: {favorite_items}")
    print(f"unfavorite_items: {unfavorite_items}")
