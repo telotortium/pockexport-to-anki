@@ -5,9 +5,12 @@ import os.path
 import pocket
 import requests
 import sys
+import time
 
 import importlib.machinery
 import importlib.util
+
+from itertools import islice
 
 # Create logger that logs to standard error
 logger = logging.getLogger("pockexport-to-anki")
@@ -38,6 +41,15 @@ loader.exec_module(secrets)
 anki_url = "http://localhost:8765"
 version = 6
 
+def batched(iterable, n):
+    "Batch data into tuples of length n. The last batch may be shorter."
+    # batched('ABCDEFG', 3) --> ABC DEF G
+    if n < 1:
+        raise ValueError('n must be at least one')
+    it = iter(iterable)
+    while batch := tuple(islice(it, n)):
+        yield batch
+
 def ankiconnect_request(payload):
    logger.debug("payload = %s", payload)
    response = json.loads(requests.post(anki_url, json=payload).text)
@@ -53,6 +65,7 @@ def main():
    deck_name = 'Articles'
    note_type = 'Pocket Article'
 
+   note_ids = set()
    suspend_cards = set()
    unsuspend_cards = set()
    suspend_items = set()
@@ -111,14 +124,19 @@ def main():
                },
             })
             mod_time = max(x["mod"] for x in response['result'])
-
             response = ankiconnect_request({
-               "action": "getNoteTags",
+               "action": "notesInfo",
                "version": version,
                "params": {
-                  "note": note_id,
+                  "notes": [note_id],
                },
             })
+            note_info = response['result'][0]
+            try:
+               note_last_sync_time = int(note_info['fields']
+                                         ['time_last_synced']['value'])
+            except (KeyError, ValueError):
+               note_last_sync_time = 0
 
             response = ankiconnect_request({
                "action": "updateNoteFields",
@@ -153,6 +171,8 @@ def main():
                continue
             note_id = response['result']
 
+         note_ids.add(note_id)
+
          response = ankiconnect_request({
             "action": "notesInfo",
             "version": version,
@@ -178,18 +198,32 @@ def main():
                unfavorite_items |= {item_id}
          note_tags -= {"marked"}
          if note_tags != set(pocket_tags):
-            if mod_time >= int(item.get('time_updated', '0')):
-               tag_updated_items[item_id] = list(note_tags)
-            else:
+            if (note_last_sync_time <= mod_time and
+                note_last_sync_time <= int(item.get('time_updated', '0'))):
+               merged_tags = note_tags | set(pocket_tags)
+               tag_updated_items[item_id] = list(merged_tags)
                response = ankiconnect_request({
                   "action": "updateNoteTags",
                   "version": version,
                   "params": {
                      "note": note_id,
-                     "tags": list(note_tags) + (
+                     "tags": list(merged_tags) + (
                         ["marked"] if should_favorite else []),
                   },
                })
+            else:
+               if mod_time >= int(item.get('time_updated', '0')):
+                  tag_updated_items[item_id] = list(note_tags)
+               else:
+                  response = ankiconnect_request({
+                     "action": "updateNoteTags",
+                     "version": version,
+                     "params": {
+                        "note": note_id,
+                        "tags": list(note_tags) + (
+                           ["marked"] if should_favorite else []),
+                     },
+                  })
 
          response = ankiconnect_request({
             "action": "findCards",
@@ -220,14 +254,14 @@ def main():
             #   readd_items |= {item_id}
             cardSuspended = cardInfo['queue'] == -1
             if mod_time >= int(item.get('time_updated', '0')):
-               if 'anki:suspended' in pocket_tags and not cardSuspended:
+               if 'anki:suspend' in pocket_tags and not cardSuspended:
                   unsuspend_items.add(item_id)
-               elif 'anki:suspended' not in note_tags and cardSuspended:
+               elif 'anki:suspend' not in note_tags and cardSuspended:
                   suspend_items.add(item_id)
             else:
-               if 'anki:suspended' in pocket_tags and not cardSuspended:
+               if 'anki:suspend' in pocket_tags and not cardSuspended:
                   suspend_cards.add(cardInfo['cardId'])
-               elif 'anki:suspended' not in note_tags and cardSuspended:
+               elif 'anki:suspend' not in note_tags and cardSuspended:
                   unsuspend_cards.add(cardInfo['cardId'])
    except KeyboardInterrupt:
       pass
@@ -272,6 +306,21 @@ def main():
    logger.info(payload)
    response = ankiconnect_request(payload)
 
+   script_sync_time = int(time.time())
+   for note_id in note_ids:
+      response = ankiconnect_request({
+         "action": "updateNoteFields",
+         "version": version,
+         "params": {
+            "note": {
+               "id": note_id,
+               "fields": {
+                  "time_last_synced": str(script_sync_time),
+               },
+            }
+         }
+      })
+
    payload = {
       "action": "sync",
       "version": version,
@@ -279,40 +328,54 @@ def main():
    logger.info(payload)
    response = ankiconnect_request(payload)
 
+   BATCH_SIZE = 50
+   def pocket_batch(collection, f_per_item, f_commit):
+      if collection:
+         for batch in batched(collection, BATCH_SIZE):
+            for x in batch:
+               f_per_item(x)
+            f_commit()
    logger.info("Pocket API")
    pocket_client = pocket.Pocket(secrets.consumer_key, secrets.access_token)
    logger.info(f"tag_updated_items: {tag_updated_items}")
-   if tag_updated_items:
-      for item_id, tags in tag_updated_items.items():
-         pocket_client.tags_replace(int(item_id), ",".join(sorted(tags)))
-      pocket_client.commit()
+   pocket_batch(
+         list(tag_updated_items.items()),
+         lambda x: print(x) or pocket_client.tags_replace(int(x[0]), ",".join(sorted(x[1]))),
+         lambda: pocket_client.commit(),
+   )
    logger.info(f"suspend_items: {suspend_items}")
-   if suspend_items:
-      for item_id in suspend_items:
-         pocket_client.tags_add(int(item_id), "anki:suspend")
-      pocket_client.commit()
+   pocket_batch(
+         suspend_items,
+         lambda item_id: pocket_client.tags_add(int(item_id), "anki:suspend"),
+         lambda: pocket_client.commit(),
+   )
    logger.info(f"unsuspend_items: {unsuspend_items}")
-   if unsuspend_items:
-      for item_id in unsuspend_items:
-         pocket_client.tags_remove(int(item_id), "anki:suspend")
-      pocket_client.commit()
+   pocket_batch(
+         unsuspend_items,
+         lambda item_id: pocket_client.tags_remove(int(item_id), "anki:suspend"),
+         lambda: pocket_client.commit(),
+   )
    logger.info(f"favorite_items: {favorite_items}")
-   if favorite_items:
-      for item_id in favorite_items:
-         pocket_client.favorite(int(item_id))
-      pocket_client.commit()
+   pocket_batch(
+         favorite_items,
+         lambda item_id: pocket_client.favorite(int(item_id)),
+         lambda: pocket_client.commit(),
+   )
    logger.info(f"unfavorite_items: {unfavorite_items}")
-   if unfavorite_items:
-      for item_id in unfavorite_items:
-         pocket_client.unfavorite(int(item_id))
-      pocket_client.commit()
+   pocket_batch(
+         unfavorite_items,
+         lambda item_id: pocket_client.unfavorite(int(item_id)),
+         lambda: pocket_client.commit(),
+   )
    logger.info(f"archive_items: {archive_items}")
-   if archive_items:
-      for item_id in archive_items:
-         pocket_client.archive(int(item_id))
-      pocket_client.commit()
+   pocket_batch(
+         archive_items,
+         lambda item_id: pocket_client.archive(int(item_id)),
+         lambda: pocket_client.commit(),
+   )
    logger.info(f"readd_items: {readd_items}")
-   if readd_items:
-      for item_id in readd_items:
-         pocket_client.readd(int(item_id))
-      pocket_client.commit()
+   pocket_batch(
+         readd_items,
+         lambda item_id: pocket_client.readd(int(item_id)),
+         lambda: pocket_client.commit(),
+   )
