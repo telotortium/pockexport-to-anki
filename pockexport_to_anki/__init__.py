@@ -38,6 +38,8 @@ spec = importlib.util.spec_from_loader('secrets', loader)
 secrets = importlib.util.module_from_spec(spec)
 loader.exec_module(secrets)
 
+ANKI_SUSPENDED_TAG = "anki:suspend"
+FAVORITE_TAG = "marked"
 anki_url = "http://localhost:8765"
 version = 6
 
@@ -66,8 +68,8 @@ def main():
    note_type = 'Pocket Article'
 
    note_ids = set()
-   suspend_cards = set()
-   unsuspend_cards = set()
+   suspend_notes = set()
+   unsuspend_notes = set()
    suspend_items = set()
    unsuspend_items = set()
    archive_items = set()
@@ -182,7 +184,7 @@ def main():
          })
          note_info = response['result'][0]
          note_tags = set(note_info['tags'])
-         note_favorited = "marked" in note_tags
+         note_favorited = FAVORITE_TAG in note_tags
          should_favorite = note_favorited
          if note_favorited and item['favorite'] == "0":
             if int(item.get('time_favorited', '0')) > mod_time:
@@ -196,7 +198,7 @@ def main():
                should_favorite = True
             else:
                unfavorite_items |= {item_id}
-         note_tags -= {"marked"}
+         note_tags -= {FAVORITE_TAG}
          if note_tags != set(pocket_tags):
             if (note_last_sync_time <= mod_time and
                 note_last_sync_time <= int(item.get('time_updated', '0'))):
@@ -208,7 +210,7 @@ def main():
                   "params": {
                      "note": note_id,
                      "tags": list(merged_tags) + (
-                        ["marked"] if should_favorite else []),
+                        [FAVORITE_TAG] if should_favorite else []),
                   },
                })
             else:
@@ -221,7 +223,7 @@ def main():
                      "params": {
                         "note": note_id,
                         "tags": list(note_tags) + (
-                           ["marked"] if should_favorite else []),
+                           [FAVORITE_TAG] if should_favorite else []),
                      },
                   })
 
@@ -234,7 +236,7 @@ def main():
          })
          cards = response['result']
          if cards is None:
-            logging.warning(response)
+            logger.warning(response)
             continue
          response = ankiconnect_request({
             "action": "cardsInfo",
@@ -246,40 +248,47 @@ def main():
          for cardInfo in response['result']:
             # `cardInfo` field meanings taken from
             # https://github.com/ankidroid/Anki-Android/wiki/Database-Structure#cards
-            cardReviewed = cardInfo['type'] == 2
-            if cardReviewed and item.get('status', '0') == '0':
+            card_reviewed = cardInfo['type'] == 2
+            if card_reviewed and item.get('status', '0') == '0':
                archive_items |= {item_id}
             # TODO: uncomment the below if I ever get through my backlog.
-            #elif not cardReviewed and item.get('status', '0') == '1':
+            #elif not card_reviewed and item.get('status', '0') == '1':
             #   readd_items |= {item_id}
-            cardSuspended = cardInfo['queue'] == -1
-            if mod_time >= int(item.get('time_updated', '0')):
-               if 'anki:suspend' in pocket_tags and not cardSuspended:
-                  unsuspend_items.add(item_id)
-               elif 'anki:suspend' not in note_tags and cardSuspended:
+            # Sync suspended status to tags, mostly for easier viewing in
+            # Pocket interface.
+            card_suspended = cardInfo['queue'] == -1
+            if (card_suspended or ANKI_SUSPENDED_TAG in pocket_tags
+                or ANKI_SUSPENDED_TAG in note_tags):
+               logger.debug(f"SUSPEND_DEBUG: item_id {item_id} note_id {note_id} card_id {cardInfo['cardId']} card_suspended {card_suspended} pocket_tagged {ANKI_SUSPENDED_TAG in pocket_tags} note_tagged {ANKI_SUSPENDED_TAG in note_tags} note_last_sync_time {note_last_sync_time} card_mod_time {mod_time} pocket_time_updated {item.get('time_updated', '0')}")
+            if card_suspended:
+               if not ANKI_SUSPENDED_TAG in note_tags:
+                  suspend_notes.add(note_id)
+               if not ANKI_SUSPENDED_TAG in pocket_tags:
                   suspend_items.add(item_id)
             else:
-               if 'anki:suspend' in pocket_tags and not cardSuspended:
-                  suspend_cards.add(cardInfo['cardId'])
-               elif 'anki:suspend' not in note_tags and cardSuspended:
-                  unsuspend_cards.add(cardInfo['cardId'])
+               if ANKI_SUSPENDED_TAG in note_tags:
+                  unsuspend_notes.add(note_id)
+               if not ANKI_SUSPENDED_TAG in pocket_tags:
+                  unsuspend_items.add(item_id)
    except KeyboardInterrupt:
       pass
 
    payload = {
-      "action": "suspend",
+      "action": "addTags",
       "version": version,
       "params": {
-         "cards": list(suspend_cards),
+         "notes": list(suspend_notes),
+         "tags": ANKI_SUSPENDED_TAG,
       },
    }
    logger.info(payload)
    response = ankiconnect_request(payload)
    payload = {
-      "action": "unsuspend",
+      "action": "removeTags",
       "version": version,
       "params": {
-         "cards": list(unsuspend_cards),
+         "notes": list(unsuspend_notes),
+         "tags": ANKI_SUSPENDED_TAG,
       },
    }
    logger.info(payload)
@@ -290,7 +299,7 @@ def main():
       "version": version,
       "params": {
          "notes": list(marked_notes),
-         "tags": "marked",
+         "tags": FAVORITE_TAG,
       },
    }
    logger.info(payload)
@@ -300,7 +309,7 @@ def main():
       "version": version,
       "params": {
          "notes": list(unmarked_notes),
-         "tags": "marked",
+         "tags": FAVORITE_TAG,
       },
    }
    logger.info(payload)
@@ -346,13 +355,13 @@ def main():
    logger.info(f"suspend_items: {suspend_items}")
    pocket_batch(
          suspend_items,
-         lambda item_id: pocket_client.tags_add(int(item_id), "anki:suspend"),
+         lambda item_id: pocket_client.tags_add(int(item_id), ANKI_SUSPENDED_TAG),
          lambda: pocket_client.commit(),
    )
    logger.info(f"unsuspend_items: {unsuspend_items}")
    pocket_batch(
          unsuspend_items,
-         lambda item_id: pocket_client.tags_remove(int(item_id), "anki:suspend"),
+         lambda item_id: pocket_client.tags_remove(int(item_id), ANKI_SUSPENDED_TAG),
          lambda: pocket_client.commit(),
    )
    logger.info(f"favorite_items: {favorite_items}")
