@@ -96,6 +96,9 @@ def main():
             'word_count': item.get('word_count', ''),
             'time_to_read': str(item.get('time_to_read', '')),
             'excerpt': item.get('excerpt', ''),
+            'authors': ", ".join(
+               author['name']
+               for author in item.get('authors', dict()).values()),
          }
 
          response = ankiconnect_request({
