@@ -319,19 +319,27 @@ def main():
    response = ankiconnect_request(payload)
 
    script_sync_time = int(time.time())
-   for note_id in note_ids:
-      response = ankiconnect_request({
-         "action": "updateNoteFields",
-         "version": version,
-         "params": {
-            "note": {
-               "id": note_id,
-               "fields": {
-                  "time_last_synced": str(script_sync_time),
+   BATCH_SIZE = 50
+   if note_ids:
+      for batch in batched(note_ids, BATCH_SIZE):
+         actions = []
+         for note_id in batch:
+            actions.append({
+               "action": "updateNoteFields",
+               "params": {
+                  "note": {
+                     "id": note_id,
+                     "fields": {
+                        "time_last_synced": str(script_sync_time),
+                     },
+                  },
                },
-            }
-         }
-      })
+            })
+         response = ankiconnect_request({
+            "action": "multi",
+            "version": version,
+            "params": {"actions": actions},
+         })
 
    payload = {
       "action": "sync",
@@ -340,7 +348,6 @@ def main():
    logger.info(payload)
    response = ankiconnect_request(payload)
 
-   BATCH_SIZE = 50
    def pocket_batch(collection, f_per_item, f_commit):
       if collection:
          for batch in batched(collection, BATCH_SIZE):
