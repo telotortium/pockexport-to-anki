@@ -114,13 +114,14 @@ def main():
          if notes_existing:
             note_id = notes_existing[0]
             response = ankiconnect_request({
-               "action": "findCards",
+               "action": "notesInfo",
                "version": version,
                "params": {
-                  "query": f"nid:{note_id}",
+                  "notes": [note_id],
                },
             })
-            cards = response['result']
+            note_info = response['result'][0]
+            cards = note_info['cards']
             response = ankiconnect_request({
                "action": "cardsModTime",
                "version": version,
@@ -129,14 +130,6 @@ def main():
                },
             })
             mod_time = max(x["mod"] for x in response['result'])
-            response = ankiconnect_request({
-               "action": "notesInfo",
-               "version": version,
-               "params": {
-                  "notes": [note_id],
-               },
-            })
-            note_info = response['result'][0]
             try:
                note_last_sync_time = int(note_info['fields']
                                          ['time_last_synced']['value'])
@@ -186,6 +179,7 @@ def main():
             },
          })
          note_info = response['result'][0]
+         cards = note_info['cards']
          note_tags = set(note_info['tags'])
          note_favorited = FAVORITE_TAG in note_tags
          should_favorite = note_favorited
@@ -230,14 +224,6 @@ def main():
                      },
                   })
 
-         response = ankiconnect_request({
-            "action": "findCards",
-            "version": version,
-            "params": {
-               "query": f"item_id:{item_id}",
-            },
-         })
-         cards = response['result']
          if cards is None:
             logger.warning(response)
             continue
