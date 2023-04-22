@@ -68,24 +68,21 @@ def main():
    note_type = 'Pocket Article'
 
    note_ids = set()
-   suspend_notes = set()
-   unsuspend_notes = set()
-   suspend_items = set()
-   unsuspend_items = set()
    archive_items = set()
    readd_items = set()
    favorite_items = set()
-   marked_notes = set()
    unfavorite_items = set()
-   unmarked_notes = set()
+   tag_updated_notes = dict()
    tag_updated_items = dict()
    try:
-      for item in data['list'].values():
+      nitem = len(data['list'])
+      for i, item in enumerate(data['list'].values()):
+         logger.debug(f"ITERATION {i}/{nitem}")
          item_id = item['item_id']
          try:
-            pocket_tags = list(item['tags'].keys())
+            pocket_tags = set(item['tags'].keys())
          except KeyError:
-            pocket_tags = []
+            pocket_tags = set()
          fields = {
             'item_id': item_id,
             'given_url': item.get('given_url', ''),
@@ -111,6 +108,7 @@ def main():
          notes_existing = response['result']
          note_id = None
          mod_time = 0
+         note_last_sync_time = 0
          if notes_existing:
             note_id = notes_existing[0]
             response = ankiconnect_request({
@@ -156,7 +154,7 @@ def main():
                      "deckName": deck_name,
                      "modelName": note_type,
                      "fields": fields,
-                     "tags": pocket_tags,
+                     "tags": list(pocket_tags),
                   }
                }
             }
@@ -180,53 +178,43 @@ def main():
          })
          note_info = response['result'][0]
          cards = note_info['cards']
+         if cards is None:
+            logger.warning(response)
+            continue
          note_tags = set(note_info['tags'])
          note_favorited = FAVORITE_TAG in note_tags
          should_favorite = note_favorited
          if note_favorited and item['favorite'] == "0":
             if int(item.get('time_favorited', '0')) > mod_time:
-               unmarked_notes |= {note_id}
+               should_favorite = False
             else:
-               favorite_items |= {item_id}
                should_favorite = True
          elif not note_favorited and item['favorite'] == "1":
             if int(item.get('time_favorited', '0')) > mod_time:
-               marked_notes |= {note_id}
                should_favorite = True
             else:
+               should_favorite = False
+         note_tags -= {FAVORITE_TAG, ANKI_SUSPENDED_TAG}
+         merged_tags = note_tags - {FAVORITE_TAG, ANKI_SUSPENDED_TAG}
+         pocket_real_tags = (
+               pocket_tags - {FAVORITE_TAG, ANKI_SUSPENDED_TAG})
+         if note_tags != pocket_tags:
+            # Overwrite `pocket_tags` only if Pocket for sure has not been
+            # updated since the last sync. Otherwise, merge `pocket_tags` into
+            # the existing note tags.
+            if not (mod_time > note_last_sync_time and
+                    note_last_sync_time > int(item.get('time_updated', '0'))):
+               merged_tags |= pocket_tags
+         if should_favorite:
+            merged_tags |= {FAVORITE_TAG}
+            if item['favorite'] == "0":
+               favorite_items |= {item_id}
+               unfavorite_items -= {item_id}
+         else:
+            merged_tags -= {FAVORITE_TAG}
+            if item['favorite'] == "1":
+               favorite_items -= {item_id}
                unfavorite_items |= {item_id}
-         note_tags -= {FAVORITE_TAG}
-         if note_tags != set(pocket_tags):
-            if (note_last_sync_time <= mod_time and
-                note_last_sync_time <= int(item.get('time_updated', '0'))):
-               merged_tags = note_tags | set(pocket_tags)
-               tag_updated_items[item_id] = list(merged_tags)
-               response = ankiconnect_request({
-                  "action": "updateNoteTags",
-                  "version": version,
-                  "params": {
-                     "note": note_id,
-                     "tags": list(merged_tags) + (
-                        [FAVORITE_TAG] if should_favorite else []),
-                  },
-               })
-            else:
-               if mod_time >= int(item.get('time_updated', '0')):
-                  tag_updated_items[item_id] = list(note_tags)
-               else:
-                  response = ankiconnect_request({
-                     "action": "updateNoteTags",
-                     "version": version,
-                     "params": {
-                        "note": note_id,
-                        "tags": list(note_tags) + (
-                           [FAVORITE_TAG] if should_favorite else []),
-                     },
-                  })
-
-         if cards is None:
-            logger.warning(response)
-            continue
          response = ankiconnect_request({
             "action": "cardsInfo",
             "version": version,
@@ -246,94 +234,23 @@ def main():
             # Sync suspended status to tags, mostly for easier viewing in
             # Pocket interface.
             card_suspended = cardInfo['queue'] == -1
-            if (card_suspended or ANKI_SUSPENDED_TAG in pocket_tags
-                or ANKI_SUSPENDED_TAG in note_tags):
-               logger.debug(f"SUSPEND_DEBUG: item_id {item_id} note_id {note_id} card_id {cardInfo['cardId']} card_suspended {card_suspended} pocket_tagged {ANKI_SUSPENDED_TAG in pocket_tags} note_tagged {ANKI_SUSPENDED_TAG in note_tags} note_last_sync_time {note_last_sync_time} card_mod_time {mod_time} pocket_time_updated {item.get('time_updated', '0')}")
             if card_suspended:
-               if not ANKI_SUSPENDED_TAG in note_tags:
-                  suspend_notes.add(note_id)
-               if not ANKI_SUSPENDED_TAG in pocket_tags:
-                  suspend_items.add(item_id)
+               merged_tags |= {ANKI_SUSPENDED_TAG}
             else:
-               if ANKI_SUSPENDED_TAG in note_tags:
-                  unsuspend_notes.add(note_id)
-               if not ANKI_SUSPENDED_TAG in pocket_tags:
-                  unsuspend_items.add(item_id)
+               merged_tags -= {ANKI_SUSPENDED_TAG}
+         if merged_tags != note_tags:
+            logger.debug(f"tag_updated_notes[{note_id}]: merged_tags {merged_tags} note_tags {note_tags}")
+            tag_updated_notes[note_id] = merged_tags
+         # FAVORITE_TAG not added to Pocket since Pocket has separate Favorite
+         # status.
+         if (merged_tags - {FAVORITE_TAG}) != pocket_tags:
+            logger.debug(f"tag_updated_items[{item_id}]: merged_tags {merged_tags - {FAVORITE_TAG}} pocket_tags {pocket_tags}")
+            tag_updated_items[item_id] = merged_tags - {FAVORITE_TAG}
+
    except KeyboardInterrupt:
       pass
 
-   payload = {
-      "action": "addTags",
-      "version": version,
-      "params": {
-         "notes": list(suspend_notes),
-         "tags": ANKI_SUSPENDED_TAG,
-      },
-   }
-   logger.info(payload)
-   response = ankiconnect_request(payload)
-   payload = {
-      "action": "removeTags",
-      "version": version,
-      "params": {
-         "notes": list(unsuspend_notes),
-         "tags": ANKI_SUSPENDED_TAG,
-      },
-   }
-   logger.info(payload)
-   response = ankiconnect_request(payload)
-
-   payload = {
-      "action": "addTags",
-      "version": version,
-      "params": {
-         "notes": list(marked_notes),
-         "tags": FAVORITE_TAG,
-      },
-   }
-   logger.info(payload)
-   response = ankiconnect_request(payload)
-   payload = {
-      "action": "removeTags",
-      "version": version,
-      "params": {
-         "notes": list(unmarked_notes),
-         "tags": FAVORITE_TAG,
-      },
-   }
-   logger.info(payload)
-   response = ankiconnect_request(payload)
-
-   script_sync_time = int(time.time())
-   BATCH_SIZE = 50
-   if note_ids:
-      for batch in batched(note_ids, BATCH_SIZE):
-         actions = []
-         for note_id in batch:
-            actions.append({
-               "action": "updateNoteFields",
-               "params": {
-                  "note": {
-                     "id": note_id,
-                     "fields": {
-                        "time_last_synced": str(script_sync_time),
-                     },
-                  },
-               },
-            })
-         response = ankiconnect_request({
-            "action": "multi",
-            "version": version,
-            "params": {"actions": actions},
-         })
-
-   payload = {
-      "action": "sync",
-      "version": version,
-   }
-   logger.info(payload)
-   response = ankiconnect_request(payload)
-
+   BATCH_SIZE = 100
    def pocket_batch(collection, f_per_item, f_commit):
       if collection:
          for batch in batched(collection, BATCH_SIZE):
@@ -346,18 +263,6 @@ def main():
    pocket_batch(
          list(tag_updated_items.items()),
          lambda x: print(x) or pocket_client.tags_replace(int(x[0]), ",".join(sorted(x[1]))),
-         lambda: pocket_client.commit(),
-   )
-   logger.info(f"suspend_items: {suspend_items}")
-   pocket_batch(
-         suspend_items,
-         lambda item_id: pocket_client.tags_add(int(item_id), ANKI_SUSPENDED_TAG),
-         lambda: pocket_client.commit(),
-   )
-   logger.info(f"unsuspend_items: {unsuspend_items}")
-   pocket_batch(
-         unsuspend_items,
-         lambda item_id: pocket_client.tags_remove(int(item_id), ANKI_SUSPENDED_TAG),
          lambda: pocket_client.commit(),
    )
    logger.info(f"favorite_items: {favorite_items}")
@@ -384,3 +289,43 @@ def main():
          lambda item_id: pocket_client.readd(int(item_id)),
          lambda: pocket_client.commit(),
    )
+
+   # script_sync_time has to be updated at the end so that we can tell if
+   # Pocket was updated *after* this script ran, which is important for tags.
+   script_sync_time = int(time.time())
+   if note_ids:
+      for batch in batched(note_ids, BATCH_SIZE):
+         actions = []
+         for note_id in batch:
+            actions.append({
+               "action": "updateNoteFields",
+               "params": {
+                  "note": {
+                     "id": note_id,
+                     "fields": {
+                        "time_last_synced": str(script_sync_time),
+                     },
+                  },
+               },
+            })
+            if note_id in tag_updated_notes:
+               actions.append({
+                  "action": "updateNoteTags",
+                  "params": {
+                     "note": note_id,
+                     "tags": list(tag_updated_notes[note_id]),
+                  },
+               })
+
+         response = ankiconnect_request({
+            "action": "multi",
+            "version": version,
+            "params": {"actions": actions},
+         })
+
+   payload = {
+      "action": "sync",
+      "version": version,
+   }
+   logger.info(payload)
+   response = ankiconnect_request(payload)
