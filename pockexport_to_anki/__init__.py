@@ -236,6 +236,7 @@ def main():
             card_suspended = cardInfo['queue'] == -1
             if card_suspended:
                merged_tags |= {ANKI_SUSPENDED_TAG}
+               archive_items |= {item_id}
             else:
                merged_tags -= {ANKI_SUSPENDED_TAG}
          if merged_tags != note_tags:
