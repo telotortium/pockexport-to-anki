@@ -3,6 +3,7 @@ import logging
 import os
 import os.path
 import pocket
+import random
 import requests
 import sys
 import time
@@ -79,6 +80,7 @@ def main():
    readd_items = set()
    favorite_items = set()
    unfavorite_items = set()
+   card_to_time_added = list()
    tag_updated_notes = dict()
    tag_updated_items = dict()
    try:
@@ -240,12 +242,20 @@ def main():
             #   readd_items |= {item_id}
             # Sync suspended status to tags, mostly for easier viewing in
             # Pocket interface.
+            card_new = cardInfo['type'] == 0 and cardInfo['queue'] == 0
             card_suspended = cardInfo['queue'] == -1
             if card_suspended:
                merged_tags |= {ANKI_SUSPENDED_TAG}
                archive_items |= {item_id}
             else:
                merged_tags -= {ANKI_SUSPENDED_TAG}
+            if card_new and not card_suspended:
+               try:
+                  time_added = int(
+                        cardInfo['fields']['time_added']['value'])
+               except (KeyError, ValueError):
+                  time_added = 0
+               card_to_time_added.append((cardInfo['cardId'], time_added))
          if merged_tags != note_tags:
             logger.debug(f"tag_updated_notes[{note_id}]: merged_tags {merged_tags} note_tags {note_tags}")
             tag_updated_notes[note_id] = merged_tags
@@ -297,6 +307,49 @@ def main():
          lambda item_id: pocket_client.readd(int(item_id)),
          lambda: pocket_client.commit(),
    )
+
+   # Adjust new card order - generally I'd like to review the most recent
+   # additions to Pocket first, but mix in some older material as well - 70%
+   # recent, 30% randomly selected.
+   # First sort most recent to least recent time_added.
+   card_to_time_added.sort(key=(lambda x: x[1]), reverse=True)
+   # Next, shuffle 30% of the entries to random positions.
+   for i in range(len(card_to_time_added)-1):
+      if random.random() < 0.7:
+         continue
+      j = random.randint(i, len(card_to_time_added)-1)
+      card_to_time_added[i], card_to_time_added[j] = (
+         card_to_time_added[j], card_to_time_added[i])
+   # Finally, write back to Anki
+   import pprint; logger.debug(f"card_to_time_added = {pprint.pformat(card_to_time_added)}")
+   due = 0
+   for batch in batched(card_to_time_added, BATCH_SIZE):
+      actions = []
+      for card_id, time_added in batch:
+         actions.append({
+            "action": "setSpecificValueOfCard",
+            "params": {
+               "card": card_id,
+               "keys": ["due"],
+               "newValues": [due],
+            },
+         })
+         due += 1
+
+      response = ankiconnect_request({
+         "action": "multi",
+         "version": version,
+         "params": {"actions": actions},
+      })
+
+   payload = {
+      "action": "findCards",
+      "version": version,
+      "params": {
+         "query": 'deck:Articles note:"Pocket article" is:new -is:suspended',
+      }
+   }
+   logger.info(payload)
 
    # script_sync_time has to be updated at the end so that we can tell if
    # Pocket was updated *after* this script ran, which is important for tags.
