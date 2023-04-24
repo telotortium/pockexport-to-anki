@@ -61,6 +61,13 @@ def ankiconnect_request(payload):
    return response
 
 def main():
+   payload = {
+      "action": "sync",
+      "version": version,
+   }
+   logger.info(payload)
+   response = ankiconnect_request(payload)
+
    with open(sys.argv[1]) as f:
       data = json.load(f)
 
