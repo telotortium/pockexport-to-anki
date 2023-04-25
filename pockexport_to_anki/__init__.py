@@ -267,6 +267,7 @@ def main():
             tag_updated_items[item_id] = merged_tags - {FAVORITE_TAG}
 
    except KeyboardInterrupt:
+      logger.info("Received KeyboardInterrupt - finishing sync")
       pass
 
    BATCH_SIZE = 100
