@@ -70,8 +70,20 @@ def main():
    logger.info(payload)
    response = ankiconnect_request(payload)
 
+   incremental_ids=None
    with open(sys.argv[1]) as f:
       data = json.load(f)
+   incremental_mode = False
+   if len(sys.argv) > 2:
+      incremental_mode = True
+   if incremental_mode:
+      data_old = data
+      with open(sys.argv[2]) as f:
+         data = json.load(f)
+      incremental_ids = (
+            frozenset(data['list'].keys()) -
+            frozenset(data_old['list'].keys())
+      )
 
    deck_name = 'Articles'
    note_type = 'Pocket Article'
@@ -87,8 +99,11 @@ def main():
    try:
       nitem = len(data['list'])
       for i, item in enumerate(data['list'].values()):
-         logger.debug(f"ITERATION {i}/{nitem}")
          item_id = item['item_id']
+         if incremental_ids is not None and item_id not in incremental_ids:
+            logger.debug(f"Skipping old item {item_id} in incremental mode")
+            continue
+         logger.debug(f"ITERATION {i}/{nitem}")
          try:
             pocket_tags = set(item['tags'].keys())
          except KeyError:
