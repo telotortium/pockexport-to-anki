@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 import os
@@ -75,7 +76,6 @@ def main():
    deck_name = 'Articles'
    note_type = 'Pocket Article'
 
-   note_ids = set()
    archive_items = set()
    readd_items = set()
    favorite_items = set()
@@ -83,6 +83,7 @@ def main():
    card_to_time_added = list()
    tag_updated_notes = dict()
    tag_updated_items = dict()
+   note_info_old = dict()
    try:
       nitem = len(data['list'])
       for i, item in enumerate(data['list'].values()):
@@ -102,9 +103,9 @@ def main():
             'word_count': item.get('word_count', ''),
             'time_to_read': str(item.get('time_to_read', '')),
             'excerpt': item.get('excerpt', ''),
-            'authors': ", ".join(
+            'authors': ", ".join(sorted(list(
                author['name']
-               for author in item.get('authors', dict()).values()),
+               for author in item.get('authors', dict()).values()))),
          }
 
          response = ankiconnect_request({
@@ -128,6 +129,13 @@ def main():
                },
             })
             note_info = response['result'][0]
+            ni = copy.deepcopy(note_info)
+            ni['cards'].sort()
+            ni['tags'].sort()
+            note_info_old[note_id] = ni
+            existing_pocket_fields = dict(
+                  (k, v['value']) for k, v in ni['fields'].items()
+                  if k in fields)
             cards = note_info['cards']
             response = ankiconnect_request({
                "action": "cardsModTime",
@@ -143,16 +151,17 @@ def main():
             except (KeyError, ValueError):
                note_last_sync_time = 0
 
-            response = ankiconnect_request({
-               "action": "updateNoteFields",
-               "version": version,
-               "params": {
-                  "note": {
-                     "id": note_id,
-                     "fields": fields,
+            if existing_pocket_fields != fields:
+               response = ankiconnect_request({
+                  "action": "updateNoteFields",
+                  "version": version,
+                  "params": {
+                     "note": {
+                        "id": note_id,
+                        "fields": fields,
+                     }
                   }
-               }
-            })
+               })
 
          else:
             payload = {
@@ -175,8 +184,7 @@ def main():
                               payload, response)
                continue
             note_id = response['result']
-
-         note_ids.add(note_id)
+            note_info_old[note_id] = dict()
 
          response = ankiconnect_request({
             "action": "notesInfo",
@@ -356,10 +364,26 @@ def main():
    # script_sync_time has to be updated at the end so that we can tell if
    # Pocket was updated *after* this script ran, which is important for tags.
    script_sync_time = int(time.time())
-   if note_ids:
-      for batch in batched(note_ids, BATCH_SIZE):
+   if note_info_old:
+      for batch in batched(list(note_info_old.keys()), BATCH_SIZE):
          actions = []
-         for note_id in batch:
+         response = ankiconnect_request({
+            "action": "notesInfo",
+            "version": version,
+            "params": {
+               "notes": batch,
+            },
+         })
+         nis = response['result']
+         note_info_new = dict()
+         for ni in nis:
+            ni['tags'].sort()
+            ni['cards'].sort()
+            note_info_new[ni['noteId']] = ni
+         note_ids_updated = set(tag_updated_notes.keys()) | set(
+               note_id for note_id in batch
+               if note_info_old[note_id] != note_info_new[note_id])
+         for note_id in note_ids_updated:
             actions.append({
                "action": "updateNoteFields",
                "params": {
