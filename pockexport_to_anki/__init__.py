@@ -62,6 +62,14 @@ def ankiconnect_request(payload):
       logger.warning("payload %s had response error: %s", payload, response)
    return response
 
+BATCH_SIZE = 100
+def pocket_batch(collection, f_per_item, f_commit):
+   if collection:
+      for batch in batched(collection, BATCH_SIZE):
+         for x in batch:
+            f_per_item(x)
+         f_commit()
+
 def main():
    payload = {
       "action": "sync",
@@ -69,6 +77,52 @@ def main():
    }
    logger.info(payload)
    response = ankiconnect_request(payload)
+
+   # First, find notes added to Anki but not yet to Pocket and add them to
+   # Pocket.
+   deck_name = 'Articles'
+   note_type = 'Pocket Article'
+   response = ankiconnect_request({
+      "action": "findNotes",
+      "version": version,
+      "params": {
+         # Find notes with `given_url` and `given_title` not empty, but
+         # `item_id` empty.
+         "query": f'"note:{note_type}" given_url:_* given_title:_* item_id:'
+      },
+   })
+   note_ids = response['result']
+   response = ankiconnect_request({
+      "action": "notesInfo",
+      "version": version,
+      "params": {
+         "notes": note_ids,
+      },
+   })
+   note_infos = response['result']
+   pocket_client = pocket.Pocket(secrets.consumer_key, secrets.access_token)
+   # Map Anki note ID to Pocket item info returned from API.
+   pocket_new_items = dict()
+   if note_infos:
+      for batch in batched(note_infos, BATCH_SIZE):
+         for ni in batch:
+            logger.info(f"ni = {ni}")
+            pocket_client.bulk_add(
+               0, url=ni['fields']['given_url']['value'],
+               title=ni['fields']['given_title']['value'],
+               tags=','.join(sorted(ni['tags'])),
+               wait=True,
+            )
+         result = pocket_client.commit()
+         for ni, res, err in zip(
+               batch,
+               result[0]['action_results'],
+               result[0]['action_errors']):
+            if err is None:
+               pocket_new_items[ni['noteId']] = res
+            else:
+               logger.error(f"Error when adding new Pocket item: {err}")
+   import pprint; logger.info(f"pocket_new_items = {pprint.pformat(pocket_new_items)}")
 
    incremental_ids=None
    with open(sys.argv[1]) as f:
@@ -80,13 +134,41 @@ def main():
       data_old = data
       with open(sys.argv[2]) as f:
          data = json.load(f)
+
+   # Augment `data` with any Anki items added to Pocket above just now; these
+   # Anki items are to be handled # as normal Pocket items by the rest of the
+   # script.
+   actions = []
+   for note_id, item in pocket_new_items.items():
+      data['list'][item['item_id']] = item
+      actions.append({
+         "action": "updateNoteFields",
+         "params": {
+            "note": {
+               "id": note_id,
+               "fields": {
+                  "item_id": item['item_id'],
+               },
+            },
+         },
+      })
+   if actions:
+      for batch in batched(actions, BATCH_SIZE):
+         response = ankiconnect_request({
+            "action": "multi",
+            "version": version,
+            "params": {"actions": actions},
+         })
+   # Now that `data` has been augmented, check in incremental mode for new
+   # Pocket items, and exit now if there are none.
+   if incremental_mode:
       incremental_ids = (
             frozenset(data['list'].keys()) -
             frozenset(data_old['list'].keys())
       )
-
-   deck_name = 'Articles'
-   note_type = 'Pocket Article'
+      if not incremental_ids:
+         logger.info("No new Pocket items, exiting")
+         sys.exit(0)
 
    archive_items = set()
    readd_items = set()
@@ -108,6 +190,11 @@ def main():
             pocket_tags = set(item['tags'].keys())
          except KeyError:
             pocket_tags = set()
+         # Pockexport produces `authors` as a dictionary, but the Pocket add
+         # API returns an empty list if there are no authors. Weird!
+         # Standardize on dictionary.
+         if 'authors' in item and isinstance(item['authors'], list):
+            item['authors']: dict()
          fields = {
             'item_id': item_id,
             'given_url': item.get('given_url', ''),
@@ -293,15 +380,7 @@ def main():
       logger.info("Received KeyboardInterrupt - finishing sync")
       pass
 
-   BATCH_SIZE = 100
-   def pocket_batch(collection, f_per_item, f_commit):
-      if collection:
-         for batch in batched(collection, BATCH_SIZE):
-            for x in batch:
-               f_per_item(x)
-            f_commit()
    logger.info("Pocket API")
-   pocket_client = pocket.Pocket(secrets.consumer_key, secrets.access_token)
    logger.info(f"tag_updated_items: {tag_updated_items}")
    pocket_batch(
          list(tag_updated_items.items()),
