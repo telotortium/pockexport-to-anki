@@ -5,6 +5,7 @@ import os
 import os.path
 import pocket
 import random
+import re
 import requests
 import sys
 import time
@@ -105,9 +106,12 @@ def main():
       for batch in batched(note_infos, BATCH_SIZE):
          for ni in batch:
             logger.info(f"ni = {ni}")
+            title=ni['fields']['given_title']['value'].strip()
+            url = ni['fields']['given_url']['value'].strip()
+            match = re.match(r'<a href="?(.*?)"?>(.*)</a>', url)
+            if match: url = match[1]
             pocket_client.bulk_add(
-               0, url=ni['fields']['given_url']['value'],
-               title=ni['fields']['given_title']['value'],
+               0, url=url, title=title,
                tags=','.join(sorted(ni['tags'])),
                wait=True,
             )
@@ -117,9 +121,11 @@ def main():
                result[0]['action_results'],
                result[0]['action_errors']):
             if err is None:
+               res['given_title'] = title
+               res['given_url'] = url
                pocket_new_items[ni['noteId']] = res
             else:
-               logger.error(f"Error when adding new Pocket item: {err}")
+               logger.error(f"note_id {ni['noteId']}: Error when adding new Pocket item: {err}")
    import pprint; logger.info(f"pocket_new_items = {pprint.pformat(pocket_new_items)}")
 
    incremental_ids=None
@@ -146,6 +152,8 @@ def main():
                "id": note_id,
                "fields": {
                   "item_id": item['item_id'],
+                  "given_title": item['given_title'],
+                  "given_url": item['given_url'],
                },
             },
          },
