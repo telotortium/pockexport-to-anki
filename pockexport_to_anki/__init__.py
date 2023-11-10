@@ -196,14 +196,14 @@ Anki must be running
     logger.info(f"pocket_new_items = {pprint.pformat(pocket_new_items)}")
 
     incremental_ids = None
-    with open(sys.argv[1]) as f:
+    with open(args.pockexport_data_file) as f:
         data = json.load(f)
     incremental_mode = False
-    if len(sys.argv) > 2:
+    if args.pockexport_data_file_old:
         incremental_mode = True
     if incremental_mode:
         data_old = data
-        with open(sys.argv[2]) as f:
+        with open(args.pockexport_data_file_old) as f:
             data = json.load(f)
 
     # Augment `data` with any Anki items added to Pocket above just now; these
@@ -572,13 +572,20 @@ Anki must be running
             nis = response["result"]
             note_info_new = dict()
             for ni in nis:
+                if not ni:
+                    continue
                 ni["tags"].sort()
                 ni["cards"].sort()
                 note_info_new[ni["noteId"]] = ni
-            note_ids_updated = set(tag_updated_notes.keys()) | set(
-                note_id
-                for note_id in batch
-                if note_info_old[note_id] != note_info_new[note_id]
+            note_ids_updated = (
+                set(tag_updated_notes.keys())
+                | set(
+                    note_id
+                    for note_id in batch
+                    if note_info_old[note_id] != note_info_new[note_id]
+                )
+                if note_info_new
+                else set()
             )
             for note_id in note_ids_updated:
                 actions.append(
