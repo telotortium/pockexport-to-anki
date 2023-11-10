@@ -295,19 +295,19 @@ def main():
             },
          })
          note_info = response['result'][0]
-         cards = note_info['cards']
+         cards = note_info.get('cards', None)
          if cards is None:
             logger.warning(response)
             continue
          note_tags = set(note_info['tags'])
          note_favorited = FAVORITE_TAG in note_tags
          should_favorite = note_favorited
-         if note_favorited and item['favorite'] == "0":
+         if note_favorited and item.get('favorite', None) == "0":
             if int(item.get('time_favorited', '0')) > mod_time:
                should_favorite = False
             else:
                should_favorite = True
-         elif not note_favorited and item['favorite'] == "1":
+         elif not note_favorited and item.get('favorite', None) == "1":
             if int(item.get('time_favorited', '0')) > mod_time:
                should_favorite = True
             else:
@@ -325,12 +325,12 @@ def main():
                merged_tags |= pocket_tags
          if should_favorite:
             merged_tags |= {FAVORITE_TAG}
-            if item['favorite'] == "0":
+            if item.get('favorite', None) == "0":
                favorite_items |= {item_id}
                unfavorite_items -= {item_id}
          else:
             merged_tags -= {FAVORITE_TAG}
-            if item['favorite'] == "1":
+            if item.get('favorite', None) == "1":
                favorite_items -= {item_id}
                unfavorite_items |= {item_id}
          response = ankiconnect_request({
