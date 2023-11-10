@@ -42,8 +42,8 @@ loader.exec_module(secrets)
 
 ANKI_SUSPENDED_TAG = "anki:suspend"
 FAVORITE_TAG = "marked"
-anki_url = "http://localhost:8765"
-version = 6
+ankiconnect_url = os.environ.get("POCKEXPORT_TO_ANKI_ANKICONNECT_URL", "http://localhost:8765")
+ankiconnect_version = 6
 
 def batched(iterable, n):
     "Batch data into tuples of length n. The last batch may be shorter."
@@ -55,8 +55,9 @@ def batched(iterable, n):
         yield batch
 
 def ankiconnect_request(payload):
+   payload["version"] = ankiconnect_version
    logger.debug("payload = %s", payload)
-   response = json.loads(requests.post(anki_url, json=payload).text)
+   response = json.loads(requests.post(ankiconnect_url, json=payload).text)
    logger.debug("response = %s", response)
    if response['error'] is not None:
       logger.warning("payload %s had response error: %s", payload, response)
@@ -73,7 +74,6 @@ def pocket_batch(collection, f_per_item, f_commit):
 def main():
    payload = {
       "action": "sync",
-      "version": version,
    }
    logger.info(payload)
    response = ankiconnect_request(payload)
@@ -84,7 +84,6 @@ def main():
    note_type = 'Pocket Article'
    response = ankiconnect_request({
       "action": "findNotes",
-      "version": version,
       "params": {
          # Find notes with `given_url` and `given_title` not empty, but
          # `item_id` empty.
@@ -94,7 +93,6 @@ def main():
    note_ids = response['result']
    response = ankiconnect_request({
       "action": "notesInfo",
-      "version": version,
       "params": {
          "notes": note_ids,
       },
@@ -156,7 +154,6 @@ def main():
       for batch in batched(actions, BATCH_SIZE):
          response = ankiconnect_request({
             "action": "multi",
-            "version": version,
             "params": {"actions": actions},
          })
    # Now that `data` has been augmented, check in incremental mode for new
@@ -212,7 +209,6 @@ def main():
 
          response = ankiconnect_request({
             "action": "findNotes",
-            "version": version,
             "params": {
                "query": f"item_id:{item_id}",
             },
@@ -225,7 +221,6 @@ def main():
             note_id = notes_existing[0]
             response = ankiconnect_request({
                "action": "notesInfo",
-               "version": version,
                "params": {
                   "notes": [note_id],
                },
@@ -241,7 +236,6 @@ def main():
             cards = note_info['cards']
             response = ankiconnect_request({
                "action": "cardsModTime",
-               "version": version,
                "params": {
                   "cards": cards,
                },
@@ -256,7 +250,6 @@ def main():
             if existing_pocket_fields != fields:
                response = ankiconnect_request({
                   "action": "updateNoteFields",
-                  "version": version,
                   "params": {
                      "note": {
                         "id": note_id,
@@ -268,7 +261,6 @@ def main():
          else:
             payload = {
                "action": "addNote",
-               "version": version,
                "params": {
                   "note": {
                      "deckName": deck_name,
@@ -278,7 +270,7 @@ def main():
                   }
                }
             }
-            response = json.loads(requests.post(anki_url, json=payload).text)
+            response = json.loads(requests.post(ankiconnect_url, json=payload).text)
             if (response['error'] is not None
                    and response['error'] !=
                    "cannot create note because it is a duplicate"):
@@ -290,7 +282,6 @@ def main():
 
          response = ankiconnect_request({
             "action": "notesInfo",
-            "version": version,
             "params": {
                "notes": [note_id],
             },
@@ -336,7 +327,6 @@ def main():
                unfavorite_items |= {item_id}
          response = ankiconnect_request({
             "action": "cardsInfo",
-            "version": version,
             "params": {
                "cards": cards,
             },
@@ -442,13 +432,11 @@ def main():
 
       response = ankiconnect_request({
          "action": "multi",
-         "version": version,
          "params": {"actions": actions},
       })
 
    payload = {
       "action": "findCards",
-      "version": version,
       "params": {
          "query": 'deck:Articles note:"Pocket article" is:new -is:suspended',
       }
@@ -463,7 +451,6 @@ def main():
          actions = []
          response = ankiconnect_request({
             "action": "notesInfo",
-            "version": version,
             "params": {
                "notes": batch,
             },
@@ -500,13 +487,11 @@ def main():
 
          response = ankiconnect_request({
             "action": "multi",
-            "version": version,
             "params": {"actions": actions},
          })
 
    payload = {
       "action": "sync",
-      "version": version,
    }
    logger.info(payload)
    response = ankiconnect_request(payload)
