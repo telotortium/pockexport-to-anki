@@ -1,8 +1,10 @@
+import argparse
 import copy
 import json
 import logging
 import os
 import os.path
+import pathlib
 import pocket
 import random
 import re
@@ -73,6 +75,22 @@ def pocket_batch(collection, f_per_item, f_commit):
          f_commit()
 
 def main():
+   parser = argparse.ArgumentParser(
+       prog="pockexport-to-anki",
+       description="""Sync articles between Pocket and Anki.
+
+The Pocket data is read from the JSON data file produced by the
+[Pockexport](https://github.com/karlicoss/pockexport) tool.
+
+Anki must be running
+""",
+   )
+   parser.add_argument("pockexport_data_file", type=pathlib.Path, help="The JSON data file exported by pockexport to read the current Pocket items from.")
+   parser.add_argument("pockexport_data_file_old", type=pathlib.Path, nargs='?', default=None, help="Optional. Previous version of the JSON data file exported by pockexport. If present, only process items that are different between this and `pockexport_data_file`.")
+   parser.add_argument(
+       "--edited", type=int, help="Only examine Anki notes modified in the past N days."
+   )
+   args = parser.parse_args()
    payload = {
       "action": "sync",
    }
@@ -99,6 +117,20 @@ def main():
       },
    })
    note_infos = response['result']
+   if args.edited:
+      response = ankiconnect_request({
+         "action": "findNotes",
+         "params": {
+            # Find notes with `given_url` and `given_title` not empty, but
+            # `item_id` empty.
+            "query": f'"note:{note_type}" given_url:_* given_title:_* item_id:'
+                     f' edited:{args.edited}',
+         },
+      })
+      note_ids_recently_edited = response['result']
+   else:
+      note_ids_recently_edited = copy.copy(note_ids)
+
    pocket_client = pocket.Pocket(secrets.consumer_key, secrets.access_token)
    # Map Anki note ID to Pocket item info returned from API.
    pocket_new_items = dict()
@@ -106,6 +138,9 @@ def main():
       for batch in batched(note_infos, BATCH_SIZE):
          for ni in batch:
             logger.info(f"ni = {ni}")
+            if ni['noteId'] not in note_ids_recently_edited:
+               logger.info(f"{ni['noteId']}: skipping because not recently edited")
+               continue
             title=ni['fields']['given_title']['value'].strip()
             url = ni['fields']['given_url']['value'].strip()
             match = re.match(r'<a href="?(.*?)"?>(.*)</a>', url)
@@ -140,7 +175,7 @@ def main():
          data = json.load(f)
 
    # Augment `data` with any Anki items added to Pocket above just now; these
-   # Anki items are to be handled # as normal Pocket items by the rest of the
+   # Anki items are to be handled as normal Pocket items by the rest of the
    # script.
    actions = []
    for note_id, item in pocket_new_items.items():
@@ -227,6 +262,9 @@ def main():
          note_last_sync_time = 0
          if notes_existing:
             note_id = notes_existing[0]
+            if note_id not in note_ids_recently_edited:
+               logger.info(f"{note_id}: skipping because not recently edited")
+               continue
             response = ankiconnect_request({
                "action": "notesInfo",
                "params": {
