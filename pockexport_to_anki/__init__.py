@@ -5,6 +5,7 @@ import logging
 import os
 import os.path
 import pathlib
+import pdb
 import pocket
 import pprint
 import random
@@ -12,6 +13,7 @@ import re
 import requests
 import sys
 import time
+import traceback
 
 import importlib.machinery
 import importlib.util
@@ -23,7 +25,12 @@ logger = logging.getLogger("pockexport-to-anki")
 # These 2 lines prevent duplicate log lines.
 logger.handlers.clear()
 logger.propagate = False
-level = os.environ.get("POCKEXPORT_TO_ANKI_LOGLEVEL", logging.INFO)
+level_default = logging.INFO
+level = os.environ.get("POCKEXPORT_TO_ANKI_LOGLEVEL")
+if level:
+    level = level.upper()
+else:
+    level = level_default
 logger.setLevel(level)
 
 # Create handler that logs to standard error
@@ -47,8 +54,9 @@ loader.exec_module(secrets)
 
 ANKI_SUSPENDED_TAG = "anki:suspend"
 FAVORITE_TAG = "marked"
+ankiconnect_url_default = "http://localhost:8765"
 ankiconnect_url = os.environ.get(
-    "POCKEXPORT_TO_ANKI_ANKICONNECT_URL", "http://localhost:8765"
+    "POCKEXPORT_TO_ANKI_ANKICONNECT_URL", ankiconnect_url_default
 )
 ankiconnect_version = 6
 
@@ -85,6 +93,19 @@ def pocket_batch(collection, f_per_item, f_commit):
 
 
 def main():
+    try:
+        _main()
+    except Exception:
+        debug = os.environ.get("POCKEXPORT_TO_ANKI_DEBUG", None)
+        if debug and debug != "0":
+            extype, value, tb = sys.exc_info()
+            traceback.print_exc()
+            pdb.post_mortem(tb)
+        else:
+            raise
+
+
+def _main():
     parser = argparse.ArgumentParser(
         prog="pockexport-to-anki",
         description="""Sync articles between Pocket and Anki.
@@ -93,6 +114,14 @@ The Pocket data is read from the JSON data file produced by the
 [Pockexport](https://github.com/karlicoss/pockexport) tool.
 
 Anki must be running
+""",
+        epilog=f"""Environment variables:
+
+- POCKEXPORT_TO_ANKI_ANKICONNECT_URL: set to the URL of AnkiConnect. Default:
+  {ankiconnect_url_default}
+  set to "{ankiconnect_url_default}".
+- POCKEXPORT_TO_ANKI_DEBUG: set in order to debug using PDB upon exception.
+- POCKEXPORT_TO_ANKI_LOGLEVEL: set log level. Default: {level_default}
 """,
     )
     parser.add_argument(
@@ -157,7 +186,7 @@ Anki must be running
         )
         note_ids_recently_edited = response["result"]
     else:
-        note_ids_recently_edited = copy.copy(note_ids)
+        note_ids_recently_edited = copy.deepcopy(note_ids)
 
     pocket_client = pocket.Pocket(secrets.consumer_key, secrets.access_token)
     # Map Anki note ID to Pocket item info returned from API.
@@ -253,6 +282,17 @@ Anki must be running
     tag_updated_notes = dict()
     tag_updated_items = dict()
     note_info_old = dict()
+    note_ids_recently_edited = ankiconnect_request(
+        {
+            "action": "findNotes",
+            "params": {
+                # Find notes with `given_url` and `given_title` not empty, but
+                # `item_id` empty.
+                "query": f'"note:{note_type}"'
+                + (f" edited:{args.edited}" if args.edited else "")
+            },
+        }
+    )["result"]
     try:
         nitem = len(data["list"])
         for i, item in enumerate(data["list"].values()):
@@ -365,7 +405,7 @@ Anki must be running
                         }
                     },
                 }
-                response = json.loads(requests.post(ankiconnect_url, json=payload).text)
+                response = ankiconnect_request(payload)
                 if (
                     response["error"] is not None
                     and response["error"]
@@ -376,7 +416,8 @@ Anki must be running
                     )
                     continue
                 note_id = response["result"]
-                note_info_old[note_id] = dict()
+                if note_id:
+                    note_info_old[note_id] = dict()
 
             response = ankiconnect_request(
                 {
@@ -584,7 +625,7 @@ Anki must be running
                     for note_id in batch
                     if note_info_old[note_id] != note_info_new[note_id]
                 )
-                if note_info_new
+                if note_info_old and note_info_new
                 else set()
             )
             for note_id in note_ids_updated:
