@@ -623,7 +623,9 @@ Anki must be running
                 | set(
                     note_id
                     for note_id in batch
-                    if note_info_old[note_id] != note_info_new[note_id]
+                    if note_id in note_info_old
+                    and note_id in note_info_new
+                    and note_info_old[note_id] != note_info_new[note_id]
                 )
                 if note_info_old and note_info_new
                 else set()
