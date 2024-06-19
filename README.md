@@ -22,3 +22,5 @@ decks. A few of the notable features:
 - (To be implemented) Sync changes made to the Anki note/card back to Pocket
   using the [Pocket Python package](https://github.com/tapanpandita/pocket).
   - Suspended status, favorite tag, other tags.
+
+Other repositories that work with the Anki Articles deck can be found in the [#anki-articles Github topic](https://github.com/topics/anki-articles).
