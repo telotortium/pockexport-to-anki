@@ -309,7 +309,7 @@ Anki must be running
             # API returns an empty list if there are no authors. Weird!
             # Standardize on dictionary.
             if "authors" in item and isinstance(item["authors"], list):
-                item["authors"]: dict()
+                item["authors"] = dict()
             fields = {
                 "item_id": item_id,
                 "given_url": item.get("given_url", ""),
