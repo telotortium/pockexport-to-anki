@@ -667,3 +667,4 @@ Anki must be running
     }
     logger.info(payload)
     response = ankiconnect_request(payload)
+    logger.info("Finished successfully")
